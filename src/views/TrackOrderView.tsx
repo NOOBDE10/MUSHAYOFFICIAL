@@ -1,5 +1,8 @@
 import React, { useState } from 'react';
+import { doc, getDoc } from 'firebase/firestore';
 import { useShop } from '../context/ShopContext';
+import { db } from '../lib/firebase';
+import { getTrackingKey } from '../lib/orderTracking';
 import { Order, OrderStatus } from '../types';
 import {
   Search,
@@ -15,11 +18,13 @@ import {
 } from 'lucide-react';
 
 export const TrackOrderView: React.FC = () => {
-  const { orders, lastPlacedOrder, products, settings, setIsWhatsAppModalOpen } = useShop();
+  const { lastPlacedOrder, products, settings, setIsWhatsAppModalOpen } = useShop();
 
   const [searchQuery, setSearchQuery] = useState(lastPlacedOrder?.orderNumber || 'ORD-98745');
-  const [phoneQuery, setPhoneQuery] = useState('');
+  const [phoneQuery, setPhoneQuery] = useState(lastPlacedOrder?.customerPhone || '');
   const [copiedAWB, setCopiedAWB] = useState(false);
+  const [isSearching, setIsSearching] = useState(false);
+  const [searchError, setSearchError] = useState('');
 
   // Status milestones
   const statusMilestones: { status: OrderStatus; title: string; desc: string; icon: string }[] = [
@@ -104,41 +109,48 @@ export const TrackOrderView: React.FC = () => {
     };
   };
 
-  const initialOrder: Order =
-    lastPlacedOrder ||
-    orders[0] ||
-    generateMockOrder('ORD-98745');
+  const initialOrder: Order = lastPlacedOrder || generateMockOrder('ORD-98745');
 
   const [currentOrder, setCurrentOrder] = useState<Order>(initialOrder);
-  const [isMockGenerated, setIsMockGenerated] = useState<boolean>(!lastPlacedOrder && orders.length === 0);
+  const [isMockGenerated, setIsMockGenerated] = useState<boolean>(!lastPlacedOrder);
 
-  const handleSearch = (e: React.FormEvent) => {
+  const handleSearch = async (e: React.FormEvent) => {
     e.preventDefault();
-    const trimmedOrder = searchQuery.trim().toLowerCase();
+    setSearchError('');
+    const trimmedOrder = searchQuery.trim();
     const trimmedPhone = phoneQuery.trim();
 
-    if (!trimmedOrder && !trimmedPhone) return;
+    if (!trimmedOrder || !trimmedPhone) {
+      setSearchError('Enter both your Order Number and the phone number used at checkout.');
+      return;
+    }
 
-    const found = orders.find((o) => {
-      const matchOrder =
-        trimmedOrder &&
-        (o.orderNumber.toLowerCase() === trimmedOrder ||
-          o.orderNumber.toLowerCase().includes(trimmedOrder));
-      const matchPhone = trimmedPhone && o.customerPhone.includes(trimmedPhone);
-
-      if (trimmedOrder && trimmedPhone) return matchOrder || matchPhone;
-      if (trimmedOrder) return matchOrder;
-      if (trimmedPhone) return matchPhone;
-      return false;
-    });
-
-    if (found) {
-      setCurrentOrder(found);
+    // The order placed just now in this session is already known locally —
+    // no need for a round trip to look it up.
+    if (lastPlacedOrder && lastPlacedOrder.orderNumber.toLowerCase() === trimmedOrder.toLowerCase()) {
+      setCurrentOrder(lastPlacedOrder);
       setIsMockGenerated(false);
-    } else {
-      const mock = generateMockOrder(trimmedOrder || 'ORD-98745');
-      setCurrentOrder(mock);
+      return;
+    }
+
+    setIsSearching(true);
+    try {
+      const trackingKey = getTrackingKey(trimmedOrder, trimmedPhone);
+      const snap = await getDoc(doc(db, 'order_lookup', trackingKey));
+      if (snap.exists()) {
+        setCurrentOrder(snap.data() as Order);
+        setIsMockGenerated(false);
+      } else {
+        setCurrentOrder(generateMockOrder(trimmedOrder));
+        setIsMockGenerated(true);
+        setSearchError('No matching order found for that Order Number and phone number.');
+      }
+    } catch {
+      setCurrentOrder(generateMockOrder(trimmedOrder));
       setIsMockGenerated(true);
+      setSearchError('Tracking is temporarily unavailable. Please try again shortly.');
+    } finally {
+      setIsSearching(false);
     }
   };
 
@@ -206,10 +218,11 @@ export const TrackOrderView: React.FC = () => {
 
               <div>
                 <label className="block text-xs uppercase tracking-wider text-[#111111] font-bold mb-1.5">
-                  Mobile Number (Optional)
+                  Mobile Number *
                 </label>
                 <input
                   type="text"
+                  required
                   value={phoneQuery}
                   onChange={(e) => setPhoneQuery(e.target.value)}
                   placeholder="e.g. 03001234567"
@@ -218,43 +231,17 @@ export const TrackOrderView: React.FC = () => {
               </div>
             </div>
 
-            {/* Quick Demo Fill Buttons */}
-            <div className="flex flex-wrap items-center gap-2 pt-1 text-xs">
-              <span className="text-stone-500 text-[11px] font-semibold">Quick Track:</span>
-              {orders.slice(0, 3).map((o) => (
-                <button
-                  key={o.id}
-                  type="button"
-                  onClick={() => {
-                    setSearchQuery(o.orderNumber);
-                    setCurrentOrder(o);
-                    setIsMockGenerated(false);
-                  }}
-                  className="px-3 py-1 bg-white hover:bg-[#ECE4D7] border border-[#A0645A]/30 hover:border-[#8B2E0B] text-[#8B2E0B] font-mono text-[11px] font-bold rounded-full transition-colors"
-                >
-                  {o.orderNumber} ({o.status})
-                </button>
-              ))}
-              <button
-                type="button"
-                onClick={() => {
-                  setSearchQuery('ORD-88219');
-                  const mock = generateMockOrder('ORD-88219');
-                  setCurrentOrder(mock);
-                  setIsMockGenerated(true);
-                }}
-                className="px-3 py-1 bg-white hover:bg-[#ECE4D7] border border-[#A0645A]/30 hover:border-[#8B2E0B] text-[#111111] font-mono text-[11px] rounded-full transition-colors"
-              >
-                Sample ORD-88219
-              </button>
-            </div>
+            {searchError && (
+              <p className="text-xs text-red-700 font-medium">{searchError}</p>
+            )}
 
             <button
               type="submit"
-              className="w-full py-3.5 bg-[#8B2E0B] hover:bg-[#702407] text-white font-bold text-xs uppercase tracking-widest rounded-[16px] shadow-sm transition-all flex items-center justify-center gap-2 cursor-pointer"
+              disabled={isSearching}
+              className="w-full py-3.5 bg-[#8B2E0B] hover:bg-[#702407] text-white font-bold text-xs uppercase tracking-widest rounded-[16px] shadow-sm transition-all flex items-center justify-center gap-2 cursor-pointer disabled:opacity-60"
             >
               <Truck className="w-4 h-4" />
-              <span>Locate & View Shipment Progress</span>
+              <span>{isSearching ? 'Searching…' : 'Locate & View Shipment Progress'}</span>
             </button>
           </form>
 

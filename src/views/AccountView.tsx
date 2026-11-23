@@ -3,7 +3,7 @@ import { useShop } from '../context/ShopContext';
 import { User, Package, MapPin, Heart, LogOut, ArrowRight, Truck } from 'lucide-react';
 
 export const AccountView: React.FC = () => {
-  const { currentUser, orders, wishlist, logout, navigateTo } = useShop();
+  const { currentUser, myOrders, wishlist, logout, navigateTo } = useShop();
 
   if (!currentUser) {
     return (
@@ -19,11 +19,7 @@ export const AccountView: React.FC = () => {
     );
   }
 
-  const userOrders = orders.filter(
-    (o) =>
-      o.customerEmail.toLowerCase() === currentUser.email.toLowerCase() ||
-      o.customerPhone === currentUser.phone
-  );
+  const userOrders = myOrders;
 
   return (
     <div className="w-full max-w-5xl mx-auto px-4 sm:px-6 lg:px-8 py-10 md:py-16 space-y-8 text-[#111111]">

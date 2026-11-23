@@ -127,7 +127,6 @@ export const INITIAL_SETTINGS: StoreSettings = {
   notificationEmail: 'mushay@gamil.com',
   storeStatus: 'open',
   currency: 'PKR',
-  adminPasswordProtectionEnabled: false,
   contactAddress: 'Plot 22, MM Alam Road, Gulberg III, Lahore, Pakistan',
   telephoneConcierge: '+92 300 1234567',
   announcementDeliveryText: 'FREE DELIVERY NATIONWIDE ON ORDERS ABOVE PKR 500',

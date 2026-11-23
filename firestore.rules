@@ -1,0 +1,105 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function isAdmin() {
+      return request.auth != null &&
+        exists(/databases/$(database)/documents/admins/$(request.auth.uid));
+    }
+
+    // Admin identity. Each admin can only read/update their own profile doc.
+    // Docs are created by the one-time migration script (or by hand in the
+    // console) — never by the client — so there's no public create/delete.
+    match /admins/{uid} {
+      allow get: if request.auth != null && request.auth.uid == uid;
+      allow update: if request.auth != null && request.auth.uid == uid;
+      allow create, delete: if false;
+      allow list: if false;
+    }
+
+    // Public storefront catalog data — readable by everyone, writable only
+    // by the admin. Checkout is allowed to update stock fields on a product
+    // without being an admin, since guest checkout decrements stock.
+    match /products/{id} {
+      allow read: if true;
+      allow create, delete: if isAdmin();
+      allow update: if isAdmin() ||
+        request.resource.data.diff(resource.data).affectedKeys()
+          .hasOnly(['stock', 'variantStock']);
+    }
+
+    match /coupons/{id} {
+      allow read: if true;
+      allow write: if isAdmin();
+    }
+
+    match /categories/{id} {
+      allow read: if true;
+      allow write: if isAdmin();
+    }
+
+    match /colors/{id} {
+      allow read: if true;
+      allow write: if isAdmin();
+    }
+
+    match /whatsapp_contacts/{id} {
+      allow read: if true;
+      allow write: if isAdmin();
+    }
+
+    match /settings/{id} {
+      allow read: if true;
+      allow write: if isAdmin();
+    }
+
+    // Guest checkout can always create an order. Reading the full collection
+    // is admin-only; a signed-in customer may only read/list their OWN
+    // orders (matched by customerUid — see ShopContext's scoped query).
+    // Anonymous guest order tracking goes through order_lookup below, not
+    // this collection.
+    match /orders/{id} {
+      allow create: if true;
+      allow get, list: if isAdmin() ||
+        (request.auth != null && resource.data.customerUid == request.auth.uid);
+      allow update, delete: if isAdmin();
+    }
+
+    // Free-tier guest order tracking: a mirror doc keyed by
+    // "{ORDERNUMBER}_{last 4 phone digits}" (see lib/orderTracking.ts). A
+    // visitor can only fetch one by its exact key — `list` is disabled, so
+    // the collection can never be browsed or dumped. Weaker than a verified
+    // server-side check, but costs nothing and needs no Cloud Functions.
+    match /order_lookup/{key} {
+      allow create: if true;
+      allow get: if true;
+      allow list: if false;
+      allow update, delete: if isAdmin();
+    }
+
+    // Customers can read/create/update only their own profile doc. Only the
+    // admin can list every customer (Customers tab) or delete an account.
+    match /users/{uid} {
+      allow get: if isAdmin() || (request.auth != null && request.auth.uid == uid);
+      allow list: if isAdmin();
+      allow create: if request.auth != null && request.auth.uid == uid;
+      allow update: if isAdmin() || (request.auth != null && request.auth.uid == uid);
+      allow delete: if isAdmin();
+    }
+
+    // Anyone can sign up for the newsletter; only the admin can see the list.
+    match /newsletter_subscribers/{id} {
+      allow create: if true;
+      allow read, update, delete: if isAdmin();
+    }
+
+    // Admin-only operational data.
+    match /monthly_archives/{id} {
+      allow read, write: if isAdmin();
+    }
+
+    match /security_logs/{id} {
+      allow read, write: if isAdmin();
+    }
+  }
+}

@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { ShopProvider, useShop } from './context/ShopContext';
 import { Header } from './components/Header';
 import { Footer } from './components/Footer';
@@ -26,8 +26,26 @@ import { AdminDashboardView } from './views/AdminDashboardView';
 import { AboutView, ContactView, FAQView } from './views/SupportViews';
 
 const AppContent: React.FC = () => {
-  const { currentView, isAdminLoggedIn, setIsAuthModalOpen, setAuthModalMode } = useShop();
+  const { currentView, isAdminLoggedIn, setIsAuthModalOpen, setAuthModalMode, isLoading, navigateTo } = useShop();
   const [searchModalOpen, setSearchModalOpen] = useState(false);
+
+  useEffect(() => {
+    if (window.location.hash === '#admin') {
+      window.location.hash = '';
+      navigateTo('admin');
+    }
+  }, []);
+
+  if (isLoading) {
+    return (
+      <div className="min-h-screen bg-[#F5EFE6] flex items-center justify-center">
+        <div className="text-center space-y-4">
+          <div className="w-10 h-10 border-2 border-[#8B2E0B] border-t-transparent rounded-full animate-spin mx-auto" />
+          <p className="text-[11px] uppercase tracking-[0.3em] text-[#8B2E0B] font-semibold">Loading Atelier</p>
+        </div>
+      </div>
+    );
+  }
 
   // If in admin view, render dedicated Admin Dashboard directly
   if (currentView === 'admin') {

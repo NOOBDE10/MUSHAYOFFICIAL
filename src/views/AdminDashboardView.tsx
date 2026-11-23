@@ -1,5 +1,6 @@
 import React, { useState, useMemo, useEffect } from 'react';
 import { useShop } from '../context/ShopContext';
+import { uploadImage } from '../lib/cloudinary';
 import { Product, Order, OrderStatus, Coupon, MonthlyArchive, StoreCategory } from '../types';
 import {
   WhatsAppContact,
@@ -48,6 +49,7 @@ import {
   MessageSquare,
   Save,
   Palette,
+  Upload,
 } from 'lucide-react';
 
 export const AdminDashboardView: React.FC = () => {
@@ -63,7 +65,6 @@ export const AdminDashboardView: React.FC = () => {
     adminLockoutUntil,
     resetAdminLockout,
     clearSecurityLogs,
-    resetAdminToSetupMode,
     updateOrderStatus,
     deleteOrder,
     deleteCustomer,
@@ -92,6 +93,7 @@ export const AdminDashboardView: React.FC = () => {
     navigateTo,
     isAdminLoggedIn,
     adminLogin,
+    sendAdminPasswordReset,
     subscribers,
     deleteSubscriber,
   } = useShop();
@@ -133,12 +135,11 @@ export const AdminDashboardView: React.FC = () => {
   // Security Credentials form
   const [currentAdminPass, setCurrentAdminPass] = useState('');
   const [newAdminName, setNewAdminName] = useState(adminCredentials.name || 'Store Executive');
-  const [newAdminEmail, setNewAdminEmail] = useState(adminCredentials.email || 'mushay@gamil.com');
-  const [newAdminGatewayPasscode, setNewAdminGatewayPasscode] = useState(adminCredentials.gatewayPasscode || '1234');
+  const [newAdminEmail, setNewAdminEmail] = useState(adminCredentials.email || '');
   const [newAdminPass, setNewAdminPass] = useState('');
   const [confirmAdminPass, setConfirmAdminPass] = useState('');
-  const [newAdminRecoveryKey, setNewAdminRecoveryKey] = useState(adminCredentials.recoveryKey || 'MUSHAY-MASTER-9900');
   const [credsFeedback, setCredsFeedback] = useState<{ success: boolean; message: string } | null>(null);
+  const [isCredsSubmitting, setIsCredsSubmitting] = useState(false);
 
   // WhatsApp Contacts Management State (Admin can freely change all numbers anytime)
   const [localContacts, setLocalContacts] = useState<WhatsAppContact[]>(() => {
@@ -204,26 +205,37 @@ export const AdminDashboardView: React.FC = () => {
   };
 
   // Dedicated Admin Authentication Gate State (Requires Email & Password before granting access)
-  const [gateEmail, setGateEmail] = useState(adminCredentials.email || 'mushay@gamil.com');
+  const [gateEmail, setGateEmail] = useState(adminCredentials.email || '');
   const [gatePassword, setGatePassword] = useState('');
   const [showGatePassword, setShowGatePassword] = useState(false);
   const [gateError, setGateError] = useState('');
   const [isGateSubmitting, setIsGateSubmitting] = useState(false);
+  const [isSendingReset, setIsSendingReset] = useState(false);
+  const [resetMessage, setResetMessage] = useState('');
 
-  const handleAdminGateSubmit = (e: React.FormEvent) => {
+  const handleForgotPassword = async () => {
+    if (!gateEmail) {
+      setGateError('Enter your admin email above first, then click "Forgot password?".');
+      return;
+    }
+    setIsSendingReset(true);
+    setGateError('');
+    const res = await sendAdminPasswordReset(gateEmail);
+    setIsSendingReset(false);
+    setResetMessage(res.message);
+  };
+
+  const handleAdminGateSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setGateError('');
     setIsGateSubmitting(true);
-
-    setTimeout(() => {
-      const res = adminLogin(gateEmail, gatePassword);
-      setIsGateSubmitting(false);
-      if (!res.success) {
-        setGateError(res.message || 'Invalid admin email or password. Access denied.');
-        return;
-      }
-      showToast('Admin access authorized. Welcome to MUSHAY Admin Dashboard!', 'success');
-    }, 250);
+    const res = await adminLogin(gateEmail, gatePassword);
+    setIsGateSubmitting(false);
+    if (!res.success) {
+      setGateError(res.message || 'Invalid admin email or password. Access denied.');
+      return;
+    }
+    showToast('Admin access authorized. Welcome to MUSHAY Admin Dashboard!', 'success');
   };
 
   // Archive modal
@@ -252,6 +264,26 @@ export const AdminDashboardView: React.FC = () => {
   // Dynamic color management in Admin
   const [adminNewColorName, setAdminNewColorName] = useState('');
   const [adminNewColorHex, setAdminNewColorHex] = useState('#8B2E0B');
+
+  // Cloudinary upload state for product image slots
+  const [uploadingSlot, setUploadingSlot] = useState<string | null>(null);
+
+  const handleCloudinaryUpload = async (
+    file: File,
+    slot: string,
+    onSuccess: (url: string) => void,
+  ) => {
+    setUploadingSlot(slot);
+    try {
+      const url = await uploadImage(file);
+      onSuccess(url);
+      showToast('Image uploaded successfully', 'success');
+    } catch (err) {
+      showToast('Upload failed — check Cloudinary preset', 'error');
+    } finally {
+      setUploadingSlot(null);
+    }
+  };
 
   // New product form
   const [newProd, setNewProd] = useState<Partial<Product>>({
@@ -363,30 +395,34 @@ export const AdminDashboardView: React.FC = () => {
     a.click();
   };
 
-  // Handle Credentials Update (User can create, change, and update password directly without roadblocks)
-  const handleUpdateCreds = (e: React.FormEvent) => {
+  // Handle Credentials Update — requires the current password to re-verify identity with Firebase Auth
+  const handleUpdateCreds = async (e: React.FormEvent) => {
     e.preventDefault();
     setCredsFeedback(null);
 
+    if (!currentAdminPass) {
+      setCredsFeedback({ success: false, message: 'Enter your current password to confirm this change.' });
+      return;
+    }
     if (newAdminPass && confirmAdminPass && newAdminPass !== confirmAdminPass) {
       setCredsFeedback({ success: false, message: 'New password and confirmation do not match.' });
       return;
     }
 
-    const res = updateAdminCredentials(
-      currentAdminPass || '',
-      newAdminEmail || 'mushay@gamil.com',
-      newAdminPass || adminCredentials.password || 'admin',
-      newAdminGatewayPasscode || '1234',
-      newAdminRecoveryKey || 'MUSHAY-MASTER-9900',
+    setIsCredsSubmitting(true);
+    const res = await updateAdminCredentials(
+      currentAdminPass,
+      newAdminEmail || adminCredentials.email,
+      newAdminPass,
       newAdminName || 'Store Executive'
     );
+    setIsCredsSubmitting(false);
     setCredsFeedback(res);
     if (res.success) {
       setCurrentAdminPass('');
       setNewAdminPass('');
       setConfirmAdminPass('');
-      showToast('Admin password and credentials saved successfully!');
+      showToast('Admin credentials saved successfully!');
     }
   };
 
@@ -575,7 +611,7 @@ export const AdminDashboardView: React.FC = () => {
         {/* Subtle background glow */}
         <div className="absolute top-1/4 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[500px] h-[500px] bg-[#8B2E0B]/10 rounded-full blur-[120px] pointer-events-none" />
         
-        <div className="relative w-full max-w-md bg-[#160D08] border border-[#C5A059]/40 rounded-xl shadow-2xl p-6 sm:p-8 space-y-6 text-[#E5E5E5] backdrop-blur-sm animate-fadeIn">
+        <div className="relative w-full max-w-md bg-[#160D08] border border-[#C5A059]/40 rounded-sm shadow-2xl p-6 sm:p-8 space-y-6 text-[#E5E5E5] backdrop-blur-sm animate-fadeIn">
           {/* Header */}
           <div className="text-center space-y-2">
             <div className="inline-flex items-center justify-center w-12 h-12 rounded-full bg-[#8B2E0B]/20 border border-[#D4AF37]/40 text-[#D4AF37] mb-1">
@@ -594,7 +630,7 @@ export const AdminDashboardView: React.FC = () => {
 
           {/* Error Message */}
           {gateError && (
-            <div className="p-3 bg-red-950/70 border border-red-800/80 rounded-lg text-xs text-red-200 flex items-start gap-2.5 animate-fadeIn">
+            <div className="p-3 bg-red-950/70 border border-red-800/80 rounded-sm text-xs text-red-200 flex items-start gap-2.5 animate-fadeIn">
               <AlertTriangle className="w-4 h-4 shrink-0 text-red-400 mt-0.5" />
               <span>{gateError}</span>
             </div>
@@ -616,8 +652,8 @@ export const AdminDashboardView: React.FC = () => {
                     setGateEmail(e.target.value);
                     if (gateError) setGateError('');
                   }}
-                  placeholder="mushay@gamil.com"
-                  className="w-full bg-black/90 border border-stone-800 focus:border-[#D4AF37] pl-9 pr-3 py-2.5 text-white rounded-lg focus:outline-none transition-colors"
+                  placeholder="mushay@gmail.com"
+                  className="w-full bg-black/90 border border-stone-800 focus:border-[#D4AF37] pl-9 pr-3 py-2.5 text-white rounded-sm focus:outline-none transition-colors"
                 />
               </div>
             </div>
@@ -637,7 +673,7 @@ export const AdminDashboardView: React.FC = () => {
                     if (gateError) setGateError('');
                   }}
                   placeholder="Enter admin password"
-                  className="w-full bg-black/90 border border-stone-800 focus:border-[#D4AF37] pl-9 pr-10 py-2.5 text-white rounded-lg focus:outline-none transition-colors"
+                  className="w-full bg-black/90 border border-stone-800 focus:border-[#D4AF37] pl-9 pr-10 py-2.5 text-white rounded-sm focus:outline-none transition-colors"
                 />
                 <button
                   type="button"
@@ -653,30 +689,28 @@ export const AdminDashboardView: React.FC = () => {
             <button
               type="submit"
               disabled={isGateSubmitting}
-              className="w-full py-3 bg-[#8B2E0B] hover:bg-[#A0645A] text-white font-bold uppercase tracking-widest text-xs rounded-lg shadow-lg hover:shadow-[0_0_20px_rgba(139,46,11,0.4)] transition-all cursor-pointer flex items-center justify-center gap-2 mt-2"
+              className="w-full py-3 bg-[#8B2E0B] hover:bg-[#A0645A] text-white font-bold uppercase tracking-widest text-xs rounded-sm shadow-lg hover:shadow-[0_0_20px_rgba(139,46,11,0.4)] transition-all cursor-pointer flex items-center justify-center gap-2 mt-2"
             >
               <span>{isGateSubmitting ? 'Verifying Credentials...' : 'Sign In to Admin Panel →'}</span>
             </button>
-          </form>
 
-          {/* Credentials Info & Back to Store */}
-          <div className="pt-2 border-t border-stone-800/80 space-y-3 text-center">
-            <div className="p-3 bg-black/60 border border-[#D4AF37]/40 rounded-lg text-[11px] text-stone-300 text-left space-y-2">
-              <span className="text-[#D4AF37] font-semibold block">Store Administrator Security:</span>
-              <p>Default Admin: <strong className="text-white">mushay@gamil.com</strong> / Password: <strong className="text-white">admin</strong></p>
+            <div className="text-center">
               <button
                 type="button"
-                onClick={() => {
-                  setGateEmail('mushay@gamil.com');
-                  setGatePassword('admin');
-                  setGateError('');
-                }}
-                className="w-full py-1.5 px-3 bg-[#D4AF37]/20 hover:bg-[#D4AF37]/35 border border-[#D4AF37]/50 text-[#D4AF37] font-semibold rounded-md transition-colors text-xs flex items-center justify-center gap-1.5 cursor-pointer"
+                onClick={handleForgotPassword}
+                disabled={isSendingReset}
+                className="text-stone-400 hover:text-[#D4AF37] text-xs underline cursor-pointer transition-colors disabled:opacity-60"
               >
-                ⚡ 1-Click Auto Fill (خودکار پاسورڈ اور ای میل درج کریں)
+                {isSendingReset ? 'Sending reset email…' : 'Forgot password?'}
               </button>
+              {resetMessage && (
+                <p className="text-[11px] text-stone-300 mt-1.5">{resetMessage}</p>
+              )}
             </div>
+          </form>
 
+          {/* Back to Store */}
+          <div className="pt-2 border-t border-stone-800/80 space-y-3 text-center">
             <button
               type="button"
               onClick={() => navigateTo('home')}
@@ -1410,13 +1444,13 @@ export const AdminDashboardView: React.FC = () => {
                   .map((cat) => (
                     <div
                       key={cat.id}
-                      className={`bg-[#140A06] border rounded-[22px] p-5 flex flex-col justify-between transition-all duration-300 hover:border-[#D4AF37] shadow-xl hover:-translate-y-1 ${
+                      className={`bg-[#140A06] border rounded-sm p-5 flex flex-col justify-between transition-all duration-300 hover:border-[#D4AF37] shadow-xl hover:-translate-y-1 ${
                         cat.isActive ? 'border-[#C5A059]/40' : 'border-stone-800 opacity-60'
                       }`}
                     >
                       <div>
                         {/* Image Preview */}
-                        <div className="relative aspect-[16/9] w-full bg-[#1F120A] rounded-[18px] overflow-hidden mb-3.5 border border-stone-800/80 shadow-inner">
+                        <div className="relative aspect-[16/9] w-full bg-[#1F120A] rounded-sm overflow-hidden mb-3.5 border border-stone-800/80 shadow-inner">
                           <img
                             src={cat.imageUrl}
                             alt={cat.name}
@@ -1463,7 +1497,7 @@ export const AdminDashboardView: React.FC = () => {
                       <div className="mt-4 pt-3.5 border-t border-stone-800/80 flex items-center justify-between gap-2">
                         <button
                           onClick={() => handleToggleCategoryActive(cat)}
-                          className={`text-xs px-3 py-1.5 rounded-[12px] border font-semibold transition-colors cursor-pointer ${
+                          className={`text-xs px-3 py-1.5 rounded-sm border font-semibold transition-colors cursor-pointer ${
                             cat.isActive
                               ? 'border-emerald-600/50 text-emerald-400 hover:bg-emerald-950/40'
                               : 'border-stone-700 text-stone-400 hover:text-white hover:bg-stone-800'
@@ -1475,7 +1509,7 @@ export const AdminDashboardView: React.FC = () => {
                         <div className="flex items-center gap-2">
                           <button
                             onClick={() => handleOpenEditCategory(cat)}
-                            className="px-3 py-1.5 bg-[#24140D] hover:bg-[#341C11] text-[#D4AF37] border border-[#D4AF37]/30 text-xs font-semibold rounded-[12px] transition-colors flex items-center gap-1 cursor-pointer"
+                            className="px-3 py-1.5 bg-[#24140D] hover:bg-[#341C11] text-[#D4AF37] border border-[#D4AF37]/30 text-xs font-semibold rounded-sm transition-colors flex items-center gap-1 cursor-pointer"
                             title="Edit Category Details & Image"
                           >
                             <Edit className="w-3 h-3" />
@@ -1484,7 +1518,7 @@ export const AdminDashboardView: React.FC = () => {
 
                           <button
                             onClick={() => handleDeleteCategory(cat.id, cat.name)}
-                            className="p-1.5 text-stone-400 hover:text-red-400 hover:bg-red-950/30 rounded-[10px] transition-colors cursor-pointer"
+                            className="p-1.5 text-stone-400 hover:text-red-400 hover:bg-red-950/30 rounded-sm transition-colors cursor-pointer"
                             title="Delete / Cancel Category"
                           >
                             <Trash2 className="w-4 h-4" />
@@ -1537,7 +1571,7 @@ export const AdminDashboardView: React.FC = () => {
                     showToast(res.message, res.success ? 'success' : 'error');
                     if (res.success) setAdminNewColorName('');
                   }}
-                  className="p-4 bg-[#140A06] border border-stone-800 rounded-[18px] grid grid-cols-1 sm:grid-cols-12 gap-3"
+                  className="p-4 bg-[#140A06] border border-stone-800 rounded-sm grid grid-cols-1 sm:grid-cols-12 gap-3"
                 >
                   <div className="sm:col-span-6">
                     <label className="block text-[11px] font-bold text-stone-300 uppercase tracking-wider mb-1">
@@ -1549,7 +1583,7 @@ export const AdminDashboardView: React.FC = () => {
                       value={adminNewColorName}
                       onChange={(e) => setAdminNewColorName(e.target.value)}
                       placeholder="e.g. Royal Navy, Emerald Green, Champagne"
-                      className="w-full bg-black/80 border border-stone-800 focus:border-[#D4AF37] text-xs px-3 py-2 text-white rounded-[10px] focus:outline-none"
+                      className="w-full bg-black/80 border border-stone-800 focus:border-[#D4AF37] text-xs px-3 py-2 text-white rounded-sm focus:outline-none"
                     />
                   </div>
                   <div className="sm:col-span-3">
@@ -1561,7 +1595,7 @@ export const AdminDashboardView: React.FC = () => {
                         type="color"
                         value={adminNewColorHex}
                         onChange={(e) => setAdminNewColorHex(e.target.value)}
-                        className="w-9 h-8 p-0 border border-stone-700 rounded-[8px] cursor-pointer bg-transparent"
+                        className="w-9 h-8 p-0 border border-stone-700 rounded-sm cursor-pointer bg-transparent"
                       />
                       <span className="text-xs font-mono text-stone-300 font-bold uppercase">{adminNewColorHex}</span>
                     </div>
@@ -1569,7 +1603,7 @@ export const AdminDashboardView: React.FC = () => {
                   <div className="sm:col-span-3 flex items-end">
                     <button
                       type="submit"
-                      className="w-full py-2 bg-[#8B2E0B] hover:bg-[#A0645A] text-white text-xs font-bold uppercase tracking-wider rounded-[10px] shadow-sm transition-all cursor-pointer"
+                      className="w-full py-2 bg-[#8B2E0B] hover:bg-[#A0645A] text-white text-xs font-bold uppercase tracking-wider rounded-sm shadow-sm transition-all cursor-pointer"
                     >
                       + Add Swatch
                     </button>
@@ -1581,7 +1615,7 @@ export const AdminDashboardView: React.FC = () => {
                   {colors.map((c) => (
                     <div
                       key={c.name}
-                      className="flex items-center justify-between p-3 bg-[#140A06] border border-stone-800/80 rounded-[14px] hover:border-[#D4AF37]/50 transition-colors"
+                      className="flex items-center justify-between p-3 bg-[#140A06] border border-stone-800/80 rounded-sm hover:border-[#D4AF37]/50 transition-colors"
                     >
                       <div className="flex items-center gap-2.5 min-w-0">
                         <span
@@ -1599,7 +1633,7 @@ export const AdminDashboardView: React.FC = () => {
                           deleteColor(c.name);
                           showToast(`Color "${c.name}" deleted from store palette.`);
                         }}
-                        className="p-1 text-stone-500 hover:text-red-400 hover:bg-red-950/30 rounded-[8px] transition-colors cursor-pointer shrink-0 ml-1"
+                        className="p-1 text-stone-500 hover:text-red-400 hover:bg-red-950/30 rounded-sm transition-colors cursor-pointer shrink-0 ml-1"
                         title={`Delete ${c.name}`}
                       >
                         <Trash2 className="w-3.5 h-3.5" />
@@ -2320,7 +2354,7 @@ export const AdminDashboardView: React.FC = () => {
               </div>
 
               {/* Newsletter & Atelier Subscribers Card */}
-              <div className="bg-[#0E0E0E] border border-[#C5A059]/30 rounded-[20px] p-6 space-y-6">
+              <div className="bg-[#0E0E0E] border border-[#C5A059]/30 rounded-sm p-6 space-y-6">
                 <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-4 border-b border-stone-800">
                   <div>
                     <div className="flex items-center gap-3">
@@ -2343,7 +2377,7 @@ export const AdminDashboardView: React.FC = () => {
                         navigator.clipboard.writeText(emailList);
                         showToast(`Copied ${subscribers.length} subscriber emails to clipboard!`);
                       }}
-                      className="px-4 py-2 bg-[#2E1B12] hover:bg-[#8B2E0B] border border-[#C5A059]/40 text-[#FAF7F2] text-xs font-semibold rounded-[16px] transition-colors flex items-center gap-2 cursor-pointer active:scale-95 shrink-0"
+                      className="px-4 py-2 bg-[#2E1B12] hover:bg-[#8B2E0B] border border-[#C5A059]/40 text-[#FAF7F2] text-xs font-semibold rounded-sm transition-colors flex items-center gap-2 cursor-pointer active:scale-95 shrink-0"
                     >
                       <Share2 className="w-3.5 h-3.5 text-[#D4AF37]" />
                       Copy All Emails
@@ -2410,7 +2444,7 @@ export const AdminDashboardView: React.FC = () => {
           {activeAdminTab === 'social' && (
             <div className="space-y-8 max-w-5xl">
               {/* Header Card */}
-              <div className="bg-[#1C1008] border border-[#C5A059]/50 rounded-[20px] p-6 md:p-8 shadow-2xl relative overflow-hidden">
+              <div className="bg-[#1C1008] border border-[#C5A059]/50 rounded-sm p-6 md:p-8 shadow-2xl relative overflow-hidden">
                 <div className="absolute top-0 right-0 w-80 h-80 bg-gradient-to-br from-[#8B2E0B]/20 to-transparent blur-3xl pointer-events-none rounded-full" />
                 
                 <div className="flex flex-col md:flex-row md:items-center justify-between gap-6 relative z-10">
@@ -2564,13 +2598,13 @@ export const AdminDashboardView: React.FC = () => {
                   return (
                     <div
                       key={channel.key}
-                      className="bg-[#140A06] border border-[#4A2E1F] hover:border-[#C5A059] rounded-[18px] p-5 transition-all duration-200 shadow-md flex flex-col justify-between space-y-4"
+                      className="bg-[#140A06] border border-[#4A2E1F] hover:border-[#C5A059] rounded-sm p-5 transition-all duration-200 shadow-md flex flex-col justify-between space-y-4"
                     >
                       <div className="space-y-3">
                         {/* Title Row with Badge */}
                         <div className="flex items-center justify-between gap-3">
                           <div className="flex items-center gap-3">
-                            <div className={`w-8 h-8 rounded-lg flex items-center justify-center font-bold text-xs shadow-md shrink-0 ${channel.iconBg}`}>
+                            <div className={`w-8 h-8 rounded-sm flex items-center justify-center font-bold text-xs shadow-md shrink-0 ${channel.iconBg}`}>
                               {channel.name.slice(0, 2).toUpperCase()}
                             </div>
                             <div>
@@ -2617,7 +2651,7 @@ export const AdminDashboardView: React.FC = () => {
                                 });
                               }}
                               placeholder={channel.placeholder}
-                              className="w-full bg-black/90 border border-stone-700 focus:border-[#D4AF37] px-3.5 py-2.5 text-white font-mono text-xs rounded-lg focus:outline-none transition-colors"
+                              className="w-full bg-black/90 border border-stone-700 focus:border-[#D4AF37] px-3.5 py-2.5 text-white font-mono text-xs rounded-sm focus:outline-none transition-colors"
                             />
                             {currentVal && (
                               <button
@@ -2667,7 +2701,7 @@ export const AdminDashboardView: React.FC = () => {
               </div>
 
               {/* Bottom Notification Card */}
-              <div className="p-4 bg-[#140A06] border border-[#C5A059]/40 rounded-xl flex items-center justify-between gap-4 text-xs text-stone-300">
+              <div className="p-4 bg-[#140A06] border border-[#C5A059]/40 rounded-sm flex items-center justify-between gap-4 text-xs text-stone-300">
                 <div className="flex items-center gap-2">
                   <CheckCircle2 className="w-5 h-5 text-emerald-400 shrink-0" />
                   <span>
@@ -2680,7 +2714,7 @@ export const AdminDashboardView: React.FC = () => {
                     showToast('Successfully verified all links!');
                     navigateTo('home');
                   }}
-                  className="px-4 py-2 bg-[#8B2E0B] text-white font-bold text-xs uppercase tracking-wider rounded-lg shrink-0 hover:bg-[#A0645A] transition-colors"
+                  className="px-4 py-2 bg-[#8B2E0B] text-white font-bold text-xs uppercase tracking-wider rounded-sm shrink-0 hover:bg-[#A0645A] transition-colors"
                 >
                   Verify on Website ↗
                 </button>
@@ -2692,10 +2726,10 @@ export const AdminDashboardView: React.FC = () => {
           {activeAdminTab === 'contacts' && (
             <div className="space-y-6 max-w-5xl">
               {/* Header Card */}
-              <div className="bg-[#160D08] border border-[#C5A059]/40 rounded-xl p-6 sm:p-8 space-y-4 shadow-xl">
+              <div className="bg-[#160D08] border border-[#C5A059]/40 rounded-sm p-6 sm:p-8 space-y-4 shadow-xl">
                 <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-4 border-b border-stone-800">
                   <div className="flex items-center gap-3.5">
-                    <div className="p-3 bg-[#25D366]/20 border border-[#25D366]/40 rounded-xl text-[#25D366]">
+                    <div className="p-3 bg-[#25D366]/20 border border-[#25D366]/40 rounded-sm text-[#25D366]">
                       <PhoneCall className="w-6 h-6" />
                     </div>
                     <div>
@@ -2712,7 +2746,7 @@ export const AdminDashboardView: React.FC = () => {
                     <button
                       type="button"
                       onClick={handleResetContactsToDefault}
-                      className="px-3.5 py-2 bg-stone-900 border border-stone-700 hover:border-stone-500 text-stone-300 hover:text-white text-xs uppercase tracking-wider rounded-lg transition-colors cursor-pointer"
+                      className="px-3.5 py-2 bg-stone-900 border border-stone-700 hover:border-stone-500 text-stone-300 hover:text-white text-xs uppercase tracking-wider rounded-sm transition-colors cursor-pointer"
                       title="Reset to default store numbers"
                     >
                       Reset Defaults
@@ -2720,7 +2754,7 @@ export const AdminDashboardView: React.FC = () => {
                     <button
                       type="button"
                       onClick={handleAddNewContact}
-                      className="px-4 py-2 bg-stone-800 hover:bg-stone-700 border border-[#D4AF37]/50 text-[#D4AF37] font-semibold text-xs uppercase tracking-wider rounded-lg transition-colors cursor-pointer flex items-center gap-1.5"
+                      className="px-4 py-2 bg-stone-800 hover:bg-stone-700 border border-[#D4AF37]/50 text-[#D4AF37] font-semibold text-xs uppercase tracking-wider rounded-sm transition-colors cursor-pointer flex items-center gap-1.5"
                     >
                       <Plus className="w-4 h-4" />
                       <span>+ Add Department</span>
@@ -2728,7 +2762,7 @@ export const AdminDashboardView: React.FC = () => {
                     <button
                       type="button"
                       onClick={handleSaveAllContacts}
-                      className="px-5 py-2 bg-gradient-to-r from-[#25D366] to-[#1EBE5D] hover:brightness-110 text-white font-bold text-xs uppercase tracking-wider rounded-lg shadow-[0_0_15px_rgba(37,211,102,0.3)] transition-all cursor-pointer flex items-center gap-2"
+                      className="px-5 py-2 bg-gradient-to-r from-[#25D366] to-[#1EBE5D] hover:brightness-110 text-white font-bold text-xs uppercase tracking-wider rounded-sm shadow-[0_0_15px_rgba(37,211,102,0.3)] transition-all cursor-pointer flex items-center gap-2"
                     >
                       <Save className="w-4 h-4" />
                       <span>Save All Numbers (محفوظ کریں)</span>
@@ -2737,7 +2771,7 @@ export const AdminDashboardView: React.FC = () => {
                 </div>
 
                 {/* Urdu Guidance Notice */}
-                <div className="p-4 bg-[#140A06] border border-[#D4AF37]/40 rounded-lg space-y-2 text-stone-300">
+                <div className="p-4 bg-[#140A06] border border-[#D4AF37]/40 rounded-sm space-y-2 text-stone-300">
                   <div className="flex items-center gap-2 text-[#D4AF37] font-semibold text-xs uppercase tracking-wider">
                     <Sparkles className="w-4 h-4 text-[#D4AF37]" />
                     <span>مکمل خود مختار سسٹم (Instant Real-time Update)</span>
@@ -2758,7 +2792,7 @@ export const AdminDashboardView: React.FC = () => {
                   return (
                     <div
                       key={contact.id || index}
-                      className="bg-[#120804] border border-[#C5A059]/30 hover:border-[#D4AF37]/60 rounded-xl p-5 space-y-4 shadow-lg transition-all"
+                      className="bg-[#120804] border border-[#C5A059]/30 hover:border-[#D4AF37]/60 rounded-sm p-5 space-y-4 shadow-lg transition-all"
                     >
                       {/* Top Bar of Card */}
                       <div className="flex items-center justify-between border-b border-stone-800/80 pb-3">
@@ -2803,7 +2837,7 @@ export const AdminDashboardView: React.FC = () => {
                               value={contact.name}
                               onChange={(e) => handleUpdateContactField(index, 'name', e.target.value)}
                               placeholder="e.g. Sales"
-                              className="w-full bg-black/80 border border-stone-700 focus:border-[#D4AF37] px-3 py-2 text-white rounded-lg focus:outline-none"
+                              className="w-full bg-black/80 border border-stone-700 focus:border-[#D4AF37] px-3 py-2 text-white rounded-sm focus:outline-none"
                             />
                           </div>
                           <div>
@@ -2815,7 +2849,7 @@ export const AdminDashboardView: React.FC = () => {
                               value={contact.nameUrdu || ''}
                               onChange={(e) => handleUpdateContactField(index, 'nameUrdu', e.target.value)}
                               placeholder="e.g. سیلز ڈیپارٹمنٹ"
-                              className="w-full bg-black/80 border border-stone-700 focus:border-[#D4AF37] px-3 py-2 text-white rounded-lg focus:outline-none text-right font-sans"
+                              className="w-full bg-black/80 border border-stone-700 focus:border-[#D4AF37] px-3 py-2 text-white rounded-sm focus:outline-none text-right font-sans"
                             />
                           </div>
                         </div>
@@ -2837,7 +2871,7 @@ export const AdminDashboardView: React.FC = () => {
                               value={contact.phoneNumber}
                               onChange={(e) => handleUpdateContactField(index, 'phoneNumber', e.target.value)}
                               placeholder="+92 300 1234567"
-                              className="w-full bg-black/90 border border-[#25D366]/50 focus:border-[#25D366] px-3 py-2.5 text-emerald-300 font-mono font-bold text-sm rounded-lg focus:outline-none tracking-wide"
+                              className="w-full bg-black/90 border border-[#25D366]/50 focus:border-[#25D366] px-3 py-2.5 text-emerald-300 font-mono font-bold text-sm rounded-sm focus:outline-none tracking-wide"
                             />
                           </div>
                         </div>
@@ -2853,7 +2887,7 @@ export const AdminDashboardView: React.FC = () => {
                               value={contact.description || ''}
                               onChange={(e) => handleUpdateContactField(index, 'description', e.target.value)}
                               placeholder="e.g. Haute couture bespoke sizing"
-                              className="w-full bg-black/80 border border-stone-700 focus:border-[#D4AF37] px-3 py-2 text-stone-300 rounded-lg focus:outline-none"
+                              className="w-full bg-black/80 border border-stone-700 focus:border-[#D4AF37] px-3 py-2 text-stone-300 rounded-sm focus:outline-none"
                             />
                           </div>
                           <div>
@@ -2865,7 +2899,7 @@ export const AdminDashboardView: React.FC = () => {
                               value={contact.badge || ''}
                               onChange={(e) => handleUpdateContactField(index, 'badge', e.target.value)}
                               placeholder="e.g. Direct VIP"
-                              className="w-full bg-black/80 border border-stone-700 focus:border-[#D4AF37] px-3 py-2 text-stone-300 rounded-lg focus:outline-none"
+                              className="w-full bg-black/80 border border-stone-700 focus:border-[#D4AF37] px-3 py-2 text-stone-300 rounded-sm focus:outline-none"
                             />
                           </div>
                         </div>
@@ -2909,7 +2943,7 @@ export const AdminDashboardView: React.FC = () => {
               </div>
 
               {/* Bottom Sticky Action Bar */}
-              <div className="p-4 bg-[#140A06] border border-[#C5A059]/40 rounded-xl flex flex-col sm:flex-row items-center justify-between gap-4 text-xs text-stone-300 shadow-xl">
+              <div className="p-4 bg-[#140A06] border border-[#C5A059]/40 rounded-sm flex flex-col sm:flex-row items-center justify-between gap-4 text-xs text-stone-300 shadow-xl">
                 <div className="flex items-center gap-3">
                   <div className="w-3 h-3 rounded-full bg-emerald-400 animate-pulse" />
                   <span>
@@ -2921,7 +2955,7 @@ export const AdminDashboardView: React.FC = () => {
                   <button
                     type="button"
                     onClick={handleSaveAllContacts}
-                    className="flex-1 sm:flex-initial px-6 py-2.5 bg-gradient-to-r from-[#25D366] to-[#1EBE5D] hover:brightness-110 text-white font-bold text-xs uppercase tracking-wider rounded-lg shadow-lg cursor-pointer flex items-center justify-center gap-2"
+                    className="flex-1 sm:flex-initial px-6 py-2.5 bg-gradient-to-r from-[#25D366] to-[#1EBE5D] hover:brightness-110 text-white font-bold text-xs uppercase tracking-wider rounded-sm shadow-lg cursor-pointer flex items-center justify-center gap-2"
                   >
                     <Save className="w-4 h-4" />
                     <span>Save All Changes (نمبرز محفوظ کریں)</span>
@@ -2932,7 +2966,7 @@ export const AdminDashboardView: React.FC = () => {
                       showToast('Live website opened. Check floating WhatsApp widget and Hero button!');
                       navigateTo('home');
                     }}
-                    className="flex-1 sm:flex-initial px-4 py-2.5 bg-stone-900 hover:bg-stone-800 border border-stone-700 text-stone-300 hover:text-white font-semibold text-xs uppercase tracking-wider rounded-lg transition-colors cursor-pointer"
+                    className="flex-1 sm:flex-initial px-4 py-2.5 bg-stone-900 hover:bg-stone-800 border border-stone-700 text-stone-300 hover:text-white font-semibold text-xs uppercase tracking-wider rounded-sm transition-colors cursor-pointer"
                   >
                     View on Storefront ↗
                   </button>
@@ -2945,7 +2979,7 @@ export const AdminDashboardView: React.FC = () => {
           {activeAdminTab === 'settings' && (
             <div className="space-y-8 max-w-3xl">
               {/* Direct Access & Password Manager Card */}
-              <div className="bg-[#0E0E0E] border border-[#C5A059]/40 rounded-[22px] p-6 md:p-8 space-y-6 shadow-xl">
+              <div className="bg-[#0E0E0E] border border-[#C5A059]/40 rounded-sm p-6 md:p-8 space-y-6 shadow-xl">
                 <div className="flex items-center justify-between border-b border-stone-800 pb-3 flex-wrap gap-2">
                   <div className="flex items-center gap-3">
                     <Lock className="w-5 h-5 text-[#D4AF37]" />
@@ -2965,14 +2999,14 @@ export const AdminDashboardView: React.FC = () => {
                 </div>
 
                 {/* Direct Entry Notice & Credentials Info */}
-                <div className="p-4 bg-[#161208] border border-[#D4AF37]/50 rounded-[16px] space-y-2.5 text-stone-300">
+                <div className="p-4 bg-[#161208] border border-[#D4AF37]/50 rounded-sm space-y-2.5 text-stone-300">
                   <div className="flex items-center gap-2 text-[#D4AF37] font-semibold text-xs uppercase tracking-wider">
                     <Sparkles className="w-4 h-4" />
                     <span>Admin Login Info & Password Change (ایڈمن لاگ اِن اور پاسورڈ تبدیل کرنے کا طریقہ)</span>
                   </div>
                   <div className="space-y-1.5 text-xs text-stone-300 leading-relaxed font-sans">
                     <p>
-                      🔹 <strong className="text-white">Admin Panel Entry:</strong> لاگ اِن کرنے کے لیے ڈیفالٹ ای میل <code className="text-[#D4AF37] font-mono px-1 py-0.5 bg-black rounded">mushay@gamil.com</code> (یا <code className="text-[#D4AF37] font-mono px-1 py-0.5 bg-black rounded">mushay@gmail.com</code>) اور پاسورڈ <code className="text-[#D4AF37] font-mono px-1 py-0.5 bg-black rounded">admin</code> ہے۔
+                      🔹 <strong className="text-white">Admin Panel Entry:</strong> لاگ اِن کرنے کے لیے ڈیفالٹ ای میل <code className="text-[#D4AF37] font-mono px-1 py-0.5 bg-black rounded">mushay@gmail.com</code> (یا <code className="text-[#D4AF37] font-mono px-1 py-0.5 bg-black rounded">mushay@gmail.com</code>) اور پاسورڈ <code className="text-[#D4AF37] font-mono px-1 py-0.5 bg-black rounded">admin</code> ہے۔
                     </p>
                     <p>
                       🔹 <strong className="text-white">Change Email & Password:</strong> اگر آپ ای میل یا پاسورڈ تبدیل کرنا چاہتے ہیں تو نیچے دیئے گئے فارم میں نیا ای میل اور نیا پاسورڈ لکھ کر <strong className="text-[#D4AF37]">"Save & Update Password"</strong> کے بٹن پر کلک کریں۔ آپ کا ای میل اور پاسورڈ فوراً تبدیل ہو جائے گا۔
@@ -2985,7 +3019,7 @@ export const AdminDashboardView: React.FC = () => {
                     <button
                       type="button"
                       onClick={() => setActiveAdminTab('contacts')}
-                      className="px-3.5 py-1.5 bg-[#25D366]/20 hover:bg-[#25D366] text-[#25D366] hover:text-white border border-[#25D366]/40 text-xs font-semibold rounded-[10px] transition-colors flex items-center gap-1.5 cursor-pointer"
+                      className="px-3.5 py-1.5 bg-[#25D366]/20 hover:bg-[#25D366] text-[#25D366] hover:text-white border border-[#25D366]/40 text-xs font-semibold rounded-sm transition-colors flex items-center gap-1.5 cursor-pointer"
                     >
                       <PhoneCall className="w-3.5 h-3.5" />
                       <span>WhatsApp Numbers Manager →</span>
@@ -2995,7 +3029,7 @@ export const AdminDashboardView: React.FC = () => {
 
                 {credsFeedback && (
                   <div
-                    className={`p-3.5 rounded-[12px] text-xs flex items-center gap-2.5 border ${
+                    className={`p-3.5 rounded-sm text-xs flex items-center gap-2.5 border ${
                       credsFeedback.success
                         ? 'bg-emerald-950/60 border-emerald-800/60 text-emerald-300'
                         : 'bg-red-950/60 border-red-800/60 text-red-300'
@@ -3018,7 +3052,7 @@ export const AdminDashboardView: React.FC = () => {
                         value={newAdminName}
                         onChange={(e) => setNewAdminName(e.target.value)}
                         placeholder="e.g. Master Store Executive"
-                        className="w-full bg-black border border-stone-800 focus:border-[#D4AF37] px-3.5 py-2.5 text-white rounded-[12px] focus:outline-none"
+                        className="w-full bg-black border border-stone-800 focus:border-[#D4AF37] px-3.5 py-2.5 text-white rounded-sm focus:outline-none"
                       />
                     </div>
 
@@ -3031,19 +3065,33 @@ export const AdminDashboardView: React.FC = () => {
                         required
                         value={newAdminEmail}
                         onChange={(e) => setNewAdminEmail(e.target.value)}
-                        placeholder="mushay@gamil.com"
-                        className="w-full bg-black border border-stone-800 focus:border-[#D4AF37] px-3.5 py-2.5 text-white rounded-[12px] focus:outline-none font-mono"
+                        placeholder="mushay@gmail.com"
+                        className="w-full bg-black border border-stone-800 focus:border-[#D4AF37] px-3.5 py-2.5 text-white rounded-sm focus:outline-none font-mono"
                       />
                     </div>
                   </div>
 
-                  {/* Create / Change Password section */}
-                  <div className="p-4 bg-black border border-[#D4AF37]/40 rounded-[16px] space-y-3">
+                  <div>
+                    <label className="block uppercase tracking-wider text-stone-300 mb-1 font-semibold">
+                      Current Password (موجودہ پاسورڈ) *
+                    </label>
+                    <input
+                      type="password"
+                      required
+                      value={currentAdminPass}
+                      onChange={(e) => setCurrentAdminPass(e.target.value)}
+                      placeholder="Required to confirm any change"
+                      className="w-full bg-black border border-stone-800 focus:border-[#D4AF37] px-3.5 py-2.5 text-white rounded-sm focus:outline-none font-mono"
+                    />
+                  </div>
+
+                  {/* Change Password section */}
+                  <div className="p-4 bg-black border border-[#D4AF37]/40 rounded-sm space-y-3">
                     <label className="block uppercase tracking-wider text-[#D4AF37] font-semibold text-xs">
-                      Set New Password or Change Password (نیا پاسورڈ بنائیں یا تبدیل کریں)
+                      Change Password (پاسورڈ تبدیل کریں) — Optional
                     </label>
                     <p className="text-[11px] text-stone-400">
-                      کوئی پرانا پاسورڈ یاد رکھنے کی ضرورت نہیں ہے۔ یہاں نیا پاسورڈ لکھ کر محفوظ کریں۔
+                      خالی چھوڑ دیں اگر پاسورڈ تبدیل نہیں کرنا۔ Leave blank to keep your current password.
                     </p>
 
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
@@ -3055,8 +3103,8 @@ export const AdminDashboardView: React.FC = () => {
                           type="text"
                           value={newAdminPass}
                           onChange={(e) => setNewAdminPass(e.target.value)}
-                          placeholder="e.g. mushay@2026 or admin123"
-                          className="w-full bg-[#141414] border border-stone-700 focus:border-[#D4AF37] px-3.5 py-2.5 text-white rounded-[12px] focus:outline-none font-mono"
+                          placeholder="Leave blank to keep current password"
+                          className="w-full bg-[#141414] border border-stone-700 focus:border-[#D4AF37] px-3.5 py-2.5 text-white rounded-sm focus:outline-none font-mono"
                         />
                       </div>
 
@@ -3069,53 +3117,27 @@ export const AdminDashboardView: React.FC = () => {
                           value={confirmAdminPass}
                           onChange={(e) => setConfirmAdminPass(e.target.value)}
                           placeholder="Repeat new password"
-                          className="w-full bg-[#141414] border border-stone-700 focus:border-[#D4AF37] px-3.5 py-2.5 text-white rounded-[12px] focus:outline-none font-mono"
+                          className="w-full bg-[#141414] border border-stone-700 focus:border-[#D4AF37] px-3.5 py-2.5 text-white rounded-sm focus:outline-none font-mono"
                         />
                       </div>
                     </div>
                   </div>
 
-                  <div>
-                    <label className="block uppercase tracking-wider text-stone-300 mb-1 font-semibold">
-                      Master Recovery Key (मास्टर रिकवरी की)
-                    </label>
-                    <input
-                      type="text"
-                      value={newAdminRecoveryKey}
-                      onChange={(e) => setNewAdminRecoveryKey(e.target.value)}
-                      placeholder="e.g. MUSHAY-MASTER-9900"
-                      className="w-full bg-black border border-stone-800 focus:border-[#D4AF37] px-3 py-2 text-white rounded-xs focus:outline-none font-mono"
-                    />
-                    <p className="text-[11px] text-stone-400 mt-1">
-                      Emergency key for instant recovery anytime.
-                    </p>
-                  </div>
-
-                  <div className="pt-3 flex flex-col sm:flex-row items-center justify-between gap-3 border-t border-stone-800">
-                    <button
-                      type="button"
-                      onClick={() => {
-                        updateSettings({ adminPasswordProtectionEnabled: !settings.adminPasswordProtectionEnabled });
-                        showToast(`Admin entry password protection toggled: ${!settings.adminPasswordProtectionEnabled ? 'ON' : 'OFF'}`);
-                      }}
-                      className="px-4 py-2.5 bg-stone-900 border border-stone-700 hover:border-[#D4AF37] text-stone-300 hover:text-white text-xs uppercase tracking-wider rounded-[12px] transition-colors cursor-pointer"
-                    >
-                      Require Password on Entry: {settings.adminPasswordProtectionEnabled ? 'ON' : 'OFF (Direct Entry)'}
-                    </button>
-
+                  <div className="pt-3 flex items-center justify-end gap-3 border-t border-stone-800">
                     <button
                       type="submit"
-                      className="px-6 py-2.5 bg-gradient-to-r from-[#F3E5AB] via-[#D4AF37] to-[#AA8222] hover:brightness-110 text-black font-bold uppercase tracking-wider rounded-[12px] transition-all shadow-lg cursor-pointer flex items-center gap-2"
+                      disabled={isCredsSubmitting}
+                      className="px-6 py-2.5 bg-gradient-to-r from-[#F3E5AB] via-[#D4AF37] to-[#AA8222] hover:brightness-110 text-black font-bold uppercase tracking-wider rounded-sm transition-all shadow-lg cursor-pointer flex items-center gap-2 disabled:opacity-60"
                     >
                       <CheckCircle2 className="w-4 h-4" />
-                      <span>Save & Update Password (پاسورڈ اور ای میل محفوظ کریں)</span>
+                      <span>{isCredsSubmitting ? 'Saving…' : 'Save Changes (محفوظ کریں)'}</span>
                     </button>
                   </div>
                 </form>
               </div>
 
               {/* Hardware Device Protection & Security Controls */}
-              <div className="bg-[#0E0E0E] border border-[#C5A059]/40 rounded-[22px] p-6 md:p-8 space-y-6 shadow-xl">
+              <div className="bg-[#0E0E0E] border border-[#C5A059]/40 rounded-sm p-6 md:p-8 space-y-6 shadow-xl">
                 <div className="flex items-center justify-between border-b border-stone-800 pb-3">
                   <div className="flex items-center gap-3">
                     <ShieldCheck className="w-5 h-5 text-[#D4AF37]" />
@@ -3130,8 +3152,8 @@ export const AdminDashboardView: React.FC = () => {
                   </div>
                   {adminFailedAttempts > 0 && (
                     <button
-                      onClick={() => resetAdminLockout('AURA-MASTER-9900')}
-                      className="px-3.5 py-1.5 bg-[#D4AF37]/15 hover:bg-[#D4AF37]/25 border border-[#D4AF37]/50 text-[#D4AF37] text-xs font-semibold rounded-[10px] transition-all flex items-center gap-1.5 cursor-pointer"
+                      onClick={() => resetAdminLockout()}
+                      className="px-3.5 py-1.5 bg-[#D4AF37]/15 hover:bg-[#D4AF37]/25 border border-[#D4AF37]/50 text-[#D4AF37] text-xs font-semibold rounded-sm transition-all flex items-center gap-1.5 cursor-pointer"
                     >
                       <RotateCcw className="w-3.5 h-3.5" />
                       <span>Reset Lockout Status</span>
@@ -3247,7 +3269,7 @@ export const AdminDashboardView: React.FC = () => {
                       <span className="text-[10px] uppercase tracking-wider text-stone-400 block mb-1 font-semibold">
                         Live Preview in Store Header:
                       </span>
-                      <div className="flex items-center gap-3 p-3 bg-[#161616] border border-[#2D2D2D] rounded-lg">
+                      <div className="flex items-center gap-3 p-3 bg-[#161616] border border-[#2D2D2D] rounded-sm">
                         <div className="flex flex-col justify-center select-none py-1">
                           <span className="text-lg font-serif-luxury font-bold tracking-wider text-[#FAF7F2] leading-none">
                             {settings.brandName || 'MUSHAY'}
@@ -3487,7 +3509,7 @@ export const AdminDashboardView: React.FC = () => {
               </div>
 
               {/* Social Media Channels Configuration Card */}
-              <div className="bg-[#1C1008] border border-[#9A6652]/40 rounded-[20px] p-6 md:p-8 space-y-6 shadow-xl">
+              <div className="bg-[#1C1008] border border-[#9A6652]/40 rounded-sm p-6 md:p-8 space-y-6 shadow-xl">
                 <div>
                   <h2 className="text-lg font-serif-luxury font-bold text-white tracking-wide">
                     Social Media Channels (سوشل میڈیا لنکس)
@@ -4013,38 +4035,93 @@ export const AdminDashboardView: React.FC = () => {
                     Product Imagery Configuration
                   </span>
 
+                  {/* Primary Image */}
                   <div>
                     <label className="block uppercase tracking-wider text-stone-300 mb-1">
-                      1. Primary Display Image URL / Path *
+                      1. Primary Display Image *
                     </label>
-                    <input
-                      type="text"
-                      required
-                      value={editingProduct.images[0] || ''}
-                      onChange={(e) => {
-                        const imgs = [...editingProduct.images];
-                        imgs[0] = e.target.value;
-                        setEditingProduct({ ...editingProduct, images: imgs });
-                      }}
-                      className="w-full bg-black border border-stone-800 px-3 py-2 text-white rounded-xs focus:outline-none focus:border-[#D4AF37]"
-                    />
+                    <div className="flex gap-2">
+                      <input
+                        type="text"
+                        required
+                        value={editingProduct.images[0] || ''}
+                        onChange={(e) => {
+                          const imgs = [...editingProduct.images];
+                          imgs[0] = e.target.value;
+                          setEditingProduct({ ...editingProduct, images: imgs });
+                        }}
+                        placeholder="Paste URL or upload →"
+                        className="flex-1 bg-black border border-stone-800 px-3 py-2 text-white rounded-xs focus:outline-none focus:border-[#D4AF37]"
+                      />
+                      <label className={`flex items-center gap-1.5 px-3 py-2 rounded-xs border text-xs font-semibold uppercase tracking-wider cursor-pointer transition-colors ${uploadingSlot === 'edit-img1' ? 'border-[#D4AF37]/50 text-[#D4AF37]/50' : 'border-[#D4AF37] text-[#D4AF37] hover:bg-[#D4AF37]/10'}`}>
+                        {uploadingSlot === 'edit-img1' ? (
+                          <span className="w-3.5 h-3.5 border border-[#D4AF37] border-t-transparent rounded-full animate-spin" />
+                        ) : (
+                          <Upload className="w-3.5 h-3.5" />
+                        )}
+                        <span>{uploadingSlot === 'edit-img1' ? 'Uploading' : 'Upload'}</span>
+                        <input
+                          type="file"
+                          accept="image/*"
+                          className="hidden"
+                          disabled={uploadingSlot !== null}
+                          onChange={(e) => {
+                            const file = e.target.files?.[0];
+                            if (!file) return;
+                            handleCloudinaryUpload(file, 'edit-img1', (url) => {
+                              const imgs = [...editingProduct.images];
+                              imgs[0] = url;
+                              setEditingProduct({ ...editingProduct, images: imgs });
+                            });
+                            e.target.value = '';
+                          }}
+                        />
+                      </label>
+                    </div>
                   </div>
 
+                  {/* Hover / Zoom Image */}
                   <div>
                     <label className="block uppercase tracking-wider text-stone-300 mb-1">
-                      2. Secondary Hover / Zoom Image URL / Path (Appears when customer hovers on card!)
+                      2. Secondary Hover / Zoom Image (Appears when customer hovers on card!)
                     </label>
-                    <input
-                      type="text"
-                      value={editingProduct.images[1] || ''}
-                      onChange={(e) => {
-                        const imgs = [...editingProduct.images];
-                        imgs[1] = e.target.value;
-                        setEditingProduct({ ...editingProduct, images: imgs });
-                      }}
-                      placeholder="e.g. /src/assets/images/... or second photo URL"
-                      className="w-full bg-black border border-stone-800 px-3 py-2 text-white rounded-xs focus:outline-none focus:border-[#D4AF37]"
-                    />
+                    <div className="flex gap-2">
+                      <input
+                        type="text"
+                        value={editingProduct.images[1] || ''}
+                        onChange={(e) => {
+                          const imgs = [...editingProduct.images];
+                          imgs[1] = e.target.value;
+                          setEditingProduct({ ...editingProduct, images: imgs });
+                        }}
+                        placeholder="Paste URL or upload →"
+                        className="flex-1 bg-black border border-stone-800 px-3 py-2 text-white rounded-xs focus:outline-none focus:border-[#D4AF37]"
+                      />
+                      <label className={`flex items-center gap-1.5 px-3 py-2 rounded-xs border text-xs font-semibold uppercase tracking-wider cursor-pointer transition-colors ${uploadingSlot === 'edit-img2' ? 'border-[#D4AF37]/50 text-[#D4AF37]/50' : 'border-[#D4AF37] text-[#D4AF37] hover:bg-[#D4AF37]/10'}`}>
+                        {uploadingSlot === 'edit-img2' ? (
+                          <span className="w-3.5 h-3.5 border border-[#D4AF37] border-t-transparent rounded-full animate-spin" />
+                        ) : (
+                          <Upload className="w-3.5 h-3.5" />
+                        )}
+                        <span>{uploadingSlot === 'edit-img2' ? 'Uploading' : 'Upload'}</span>
+                        <input
+                          type="file"
+                          accept="image/*"
+                          className="hidden"
+                          disabled={uploadingSlot !== null}
+                          onChange={(e) => {
+                            const file = e.target.files?.[0];
+                            if (!file) return;
+                            handleCloudinaryUpload(file, 'edit-img2', (url) => {
+                              const imgs = [...editingProduct.images];
+                              imgs[1] = url;
+                              setEditingProduct({ ...editingProduct, images: imgs });
+                            });
+                            e.target.value = '';
+                          }}
+                        />
+                      </label>
+                    </div>
                   </div>
 
                   {/* Previews */}
@@ -4198,38 +4275,109 @@ export const AdminDashboardView: React.FC = () => {
                     Product Imagery
                   </span>
 
+                  {/* Primary Image */}
                   <div>
                     <label className="block uppercase tracking-wider text-stone-300 mb-1">
-                      1. Primary Display Image URL / Path *
+                      1. Primary Display Image *
                     </label>
-                    <input
-                      type="text"
-                      required
-                      value={newProd.images?.[0] || ''}
-                      onChange={(e) => {
-                        const imgs = [...(newProd.images || [])];
-                        imgs[0] = e.target.value;
-                        setNewProd({ ...newProd, images: imgs });
-                      }}
-                      className="w-full bg-black border border-stone-800 px-3 py-2 text-white rounded-xs focus:outline-none focus:border-[#D4AF37]"
-                    />
+                    <div className="flex gap-2">
+                      <input
+                        type="text"
+                        required
+                        value={newProd.images?.[0] || ''}
+                        onChange={(e) => {
+                          const imgs = [...(newProd.images || [])];
+                          imgs[0] = e.target.value;
+                          setNewProd({ ...newProd, images: imgs });
+                        }}
+                        placeholder="Paste URL or upload →"
+                        className="flex-1 bg-black border border-stone-800 px-3 py-2 text-white rounded-xs focus:outline-none focus:border-[#D4AF37]"
+                      />
+                      <label className={`flex items-center gap-1.5 px-3 py-2 rounded-xs border text-xs font-semibold uppercase tracking-wider cursor-pointer transition-colors ${uploadingSlot === 'new-img1' ? 'border-[#D4AF37]/50 text-[#D4AF37]/50' : 'border-[#D4AF37] text-[#D4AF37] hover:bg-[#D4AF37]/10'}`}>
+                        {uploadingSlot === 'new-img1' ? (
+                          <span className="w-3.5 h-3.5 border border-[#D4AF37] border-t-transparent rounded-full animate-spin" />
+                        ) : (
+                          <Upload className="w-3.5 h-3.5" />
+                        )}
+                        <span>{uploadingSlot === 'new-img1' ? 'Uploading' : 'Upload'}</span>
+                        <input
+                          type="file"
+                          accept="image/*"
+                          className="hidden"
+                          disabled={uploadingSlot !== null}
+                          onChange={(e) => {
+                            const file = e.target.files?.[0];
+                            if (!file) return;
+                            handleCloudinaryUpload(file, 'new-img1', (url) => {
+                              const imgs = [...(newProd.images || [])];
+                              imgs[0] = url;
+                              setNewProd({ ...newProd, images: imgs });
+                            });
+                            e.target.value = '';
+                          }}
+                        />
+                      </label>
+                    </div>
                   </div>
 
+                  {/* Hover / Zoom Image */}
                   <div>
                     <label className="block uppercase tracking-wider text-stone-300 mb-1">
-                      2. Secondary Hover/Zoom Image URL / Path
+                      2. Secondary Hover/Zoom Image (revealed on card hover)
                     </label>
-                    <input
-                      type="text"
-                      value={newProd.images?.[1] || ''}
-                      onChange={(e) => {
-                        const imgs = [...(newProd.images || [])];
-                        imgs[1] = e.target.value;
-                        setNewProd({ ...newProd, images: imgs });
-                      }}
-                      placeholder="e.g. /src/assets/images/... (revealed on card hover)"
-                      className="w-full bg-black border border-stone-800 px-3 py-2 text-white rounded-xs focus:outline-none focus:border-[#D4AF37]"
-                    />
+                    <div className="flex gap-2">
+                      <input
+                        type="text"
+                        value={newProd.images?.[1] || ''}
+                        onChange={(e) => {
+                          const imgs = [...(newProd.images || [])];
+                          imgs[1] = e.target.value;
+                          setNewProd({ ...newProd, images: imgs });
+                        }}
+                        placeholder="Paste URL or upload →"
+                        className="flex-1 bg-black border border-stone-800 px-3 py-2 text-white rounded-xs focus:outline-none focus:border-[#D4AF37]"
+                      />
+                      <label className={`flex items-center gap-1.5 px-3 py-2 rounded-xs border text-xs font-semibold uppercase tracking-wider cursor-pointer transition-colors ${uploadingSlot === 'new-img2' ? 'border-[#D4AF37]/50 text-[#D4AF37]/50' : 'border-[#D4AF37] text-[#D4AF37] hover:bg-[#D4AF37]/10'}`}>
+                        {uploadingSlot === 'new-img2' ? (
+                          <span className="w-3.5 h-3.5 border border-[#D4AF37] border-t-transparent rounded-full animate-spin" />
+                        ) : (
+                          <Upload className="w-3.5 h-3.5" />
+                        )}
+                        <span>{uploadingSlot === 'new-img2' ? 'Uploading' : 'Upload'}</span>
+                        <input
+                          type="file"
+                          accept="image/*"
+                          className="hidden"
+                          disabled={uploadingSlot !== null}
+                          onChange={(e) => {
+                            const file = e.target.files?.[0];
+                            if (!file) return;
+                            handleCloudinaryUpload(file, 'new-img2', (url) => {
+                              const imgs = [...(newProd.images || [])];
+                              imgs[1] = url;
+                              setNewProd({ ...newProd, images: imgs });
+                            });
+                            e.target.value = '';
+                          }}
+                        />
+                      </label>
+                    </div>
+                  </div>
+
+                  {/* Previews */}
+                  <div className="flex items-center gap-3 pt-2">
+                    {newProd.images?.[0] && (
+                      <div className="text-center">
+                        <img src={newProd.images[0]} alt="Primary" className="w-12 h-14 object-cover rounded-xs border border-stone-700" />
+                        <span className="text-[10px] text-stone-400">Primary</span>
+                      </div>
+                    )}
+                    {newProd.images?.[1] && (
+                      <div className="text-center">
+                        <img src={newProd.images[1]} alt="Hover" className="w-12 h-14 object-cover rounded-xs border border-[#D4AF37]/50" />
+                        <span className="text-[10px] text-[#D4AF37]">Hover Zoom</span>
+                      </div>
+                    )}
                   </div>
                 </div>
 
@@ -4547,10 +4695,10 @@ export const AdminDashboardView: React.FC = () => {
           />
 
           <div className="relative min-h-screen flex items-center justify-center p-4">
-            <div className="relative w-full max-w-lg bg-[#1C1008] border border-[#D4AF37]/50 rounded-[22px] shadow-2xl p-6 sm:p-7 text-white animate-in fade-in zoom-in-95 duration-200">
+            <div className="relative w-full max-w-lg bg-[#1C1008] border border-[#D4AF37]/50 rounded-sm shadow-2xl p-6 sm:p-7 text-white animate-in fade-in zoom-in-95 duration-200">
               <div className="flex items-center justify-between pb-4 border-b border-stone-800">
                 <div className="flex items-center gap-2.5">
-                  <div className="p-2 bg-[#D4AF37]/15 rounded-[10px] text-[#D4AF37]">
+                  <div className="p-2 bg-[#D4AF37]/15 rounded-sm text-[#D4AF37]">
                     <Tag className="w-4 h-4" />
                   </div>
                   <div>
@@ -4582,7 +4730,7 @@ export const AdminDashboardView: React.FC = () => {
                     value={categoryForm.name}
                     onChange={(e) => setCategoryForm({ ...categoryForm, name: e.target.value })}
                     placeholder="e.g. Brazilian Jackets, Dresses, Tops & T-Shirts, All Collections"
-                    className="w-full bg-[#140A06] border border-stone-700 focus:border-[#D4AF37] px-3.5 py-2.5 text-white rounded-[12px] focus:outline-none"
+                    className="w-full bg-[#140A06] border border-stone-700 focus:border-[#D4AF37] px-3.5 py-2.5 text-white rounded-sm focus:outline-none"
                   />
                 </div>
 
@@ -4600,7 +4748,7 @@ export const AdminDashboardView: React.FC = () => {
                           gender: e.target.value as 'women' | 'men' | 'child' | 'all',
                         })
                       }
-                      className="w-full bg-[#140A06] border border-stone-700 focus:border-[#D4AF37] px-3.5 py-2.5 text-white rounded-[12px] focus:outline-none"
+                      className="w-full bg-[#140A06] border border-stone-700 focus:border-[#D4AF37] px-3.5 py-2.5 text-white rounded-sm focus:outline-none"
                     >
                       <option value="women">Women's Line</option>
                       <option value="men">Men's Line</option>
@@ -4620,7 +4768,7 @@ export const AdminDashboardView: React.FC = () => {
                       onChange={(e) =>
                         setCategoryForm({ ...categoryForm, itemCount: Number(e.target.value) })
                       }
-                      className="w-full bg-[#140A06] border border-stone-700 focus:border-[#D4AF37] px-3.5 py-2.5 text-white font-mono rounded-[12px] focus:outline-none"
+                      className="w-full bg-[#140A06] border border-stone-700 focus:border-[#D4AF37] px-3.5 py-2.5 text-white font-mono rounded-sm focus:outline-none"
                     />
                   </div>
                 </div>
@@ -4637,7 +4785,7 @@ export const AdminDashboardView: React.FC = () => {
                       setCategoryForm({ ...categoryForm, description: e.target.value })
                     }
                     placeholder="Brief description of fabrics, styles, or silhouettes..."
-                    className="w-full bg-[#140A06] border border-stone-700 focus:border-[#D4AF37] px-3.5 py-2.5 text-white rounded-[12px] focus:outline-none"
+                    className="w-full bg-[#140A06] border border-stone-700 focus:border-[#D4AF37] px-3.5 py-2.5 text-white rounded-sm focus:outline-none"
                   />
                 </div>
 
@@ -4652,7 +4800,7 @@ export const AdminDashboardView: React.FC = () => {
                     value={categoryForm.imageUrl}
                     onChange={(e) => setCategoryForm({ ...categoryForm, imageUrl: e.target.value })}
                     placeholder="/src/assets/images/... or https://..."
-                    className="w-full bg-[#140A06] border border-stone-700 focus:border-[#D4AF37] px-3.5 py-2.5 text-white font-mono text-[11px] rounded-[12px] focus:outline-none mb-2"
+                    className="w-full bg-[#140A06] border border-stone-700 focus:border-[#D4AF37] px-3.5 py-2.5 text-white font-mono text-[11px] rounded-sm focus:outline-none mb-2"
                   />
 
                   {/* Preset Image Chips */}
@@ -4666,7 +4814,7 @@ export const AdminDashboardView: React.FC = () => {
                           key={preset.url}
                           type="button"
                           onClick={() => setCategoryForm({ ...categoryForm, imageUrl: preset.url })}
-                          className={`p-1.5 border rounded-[12px] text-left transition-all flex flex-col items-center gap-1 cursor-pointer ${
+                          className={`p-1.5 border rounded-sm text-left transition-all flex flex-col items-center gap-1 cursor-pointer ${
                             categoryForm.imageUrl === preset.url
                               ? 'border-[#D4AF37] bg-[#2E1B12] ring-1 ring-[#D4AF37]'
                               : 'border-stone-800 hover:border-stone-600 bg-[#140A06]'
@@ -4676,7 +4824,7 @@ export const AdminDashboardView: React.FC = () => {
                             src={preset.url}
                             alt={preset.label}
                             referrerPolicy="no-referrer"
-                            className="w-full h-12 object-cover rounded-[8px]"
+                            className="w-full h-12 object-cover rounded-sm"
                           />
                           <span className="text-[9px] text-stone-300 truncate w-full text-center">
                             {preset.label}
@@ -4708,13 +4856,13 @@ export const AdminDashboardView: React.FC = () => {
                   <button
                     type="button"
                     onClick={() => setIsCategoryModalOpen(false)}
-                    className="px-4 py-2 bg-[#24140D] hover:bg-[#341C11] text-stone-300 rounded-[12px] uppercase tracking-wider font-semibold border border-stone-700 transition-colors cursor-pointer"
+                    className="px-4 py-2 bg-[#24140D] hover:bg-[#341C11] text-stone-300 rounded-sm uppercase tracking-wider font-semibold border border-stone-700 transition-colors cursor-pointer"
                   >
                     Cancel
                   </button>
                   <button
                     type="submit"
-                    className="px-5 py-2.5 bg-gradient-to-r from-[#D4AF37] to-[#AA8222] hover:brightness-110 text-[#140A06] rounded-[12px] uppercase tracking-wider font-bold shadow-lg transition-all cursor-pointer"
+                    className="px-5 py-2.5 bg-gradient-to-r from-[#D4AF37] to-[#AA8222] hover:brightness-110 text-[#140A06] rounded-sm uppercase tracking-wider font-bold shadow-lg transition-all cursor-pointer"
                   >
                     {editingCategory ? 'Update Category (محفوظ کریں)' : 'Save Category (شامل کریں)'}
                   </button>

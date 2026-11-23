@@ -21,7 +21,6 @@ export const AuthModal: React.FC = () => {
     login,
     signup,
     settings,
-    navigateTo,
   } = useShop();
 
   // Customer Login State
@@ -46,24 +45,21 @@ export const AuthModal: React.FC = () => {
   if (!isAuthModalOpen) return null;
 
   // 1. Customer Login Submit
-  const handleCustomerLogin = (e: React.FormEvent) => {
+  const handleCustomerLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     setFeedback(null);
     setIsSubmitting(true);
-
-    setTimeout(() => {
-      const res = login(loginEmail, loginPassword);
-      setFeedback(res);
-      setIsSubmitting(false);
-      if (res.success) {
-        setLoginEmail('');
-        setLoginPassword('');
-      }
-    }, 350);
+    const res = await login(loginEmail, loginPassword);
+    setFeedback(res);
+    setIsSubmitting(false);
+    if (res.success) {
+      setLoginEmail('');
+      setLoginPassword('');
+    }
   };
 
   // 2. Customer Signup Submit
-  const handleCustomerSignup = (e: React.FormEvent) => {
+  const handleCustomerSignup = async (e: React.FormEvent) => {
     e.preventDefault();
     setFeedback(null);
 
@@ -73,21 +69,12 @@ export const AuthModal: React.FC = () => {
     }
 
     setIsSubmitting(true);
-    setTimeout(() => {
-      const res = signup(signupData);
-      setFeedback(res);
-      setIsSubmitting(false);
-      if (res.success) {
-        setSignupData({
-          name: '',
-          email: '',
-          password: '',
-          phone: '',
-          city: 'Lahore',
-          address: '',
-        });
-      }
-    }, 350);
+    const res = await signup(signupData);
+    setFeedback(res);
+    setIsSubmitting(false);
+    if (res.success) {
+      setSignupData({ name: '', email: '', password: '', phone: '', city: 'Lahore', address: '' });
+    }
   };
 
   return (
@@ -225,44 +212,17 @@ export const AuthModal: React.FC = () => {
                 <ArrowRight className="w-4 h-4" />
               </button>
 
-              <div className="text-center pt-2 space-y-2">
-                <div>
-                  <span className="text-stone-500">
-                    New to {settings.brandName || 'MUSHAY'}?{' '}
-                    <button
-                      type="button"
-                      onClick={() => setAuthModalMode('signup')}
-                      className="text-[#8B2E0B] hover:underline font-bold cursor-pointer"
-                    >
-                      Create an account
-                    </button>
-                  </span>
-                </div>
-
-                <div className="pt-3 border-t border-[#A0645A]/20 flex items-center justify-between gap-2 flex-wrap">
+              <div className="text-center pt-2">
+                <span className="text-stone-500">
+                  New to {settings.brandName || 'MUSHAY'}?{' '}
                   <button
                     type="button"
-                    onClick={() => {
-                      setLoginEmail('mushay@gamil.com');
-                      setLoginPassword('admin12345');
-                      setFeedback(null);
-                    }}
-                    className="text-[#8B2E0B] hover:underline text-[11px] font-bold transition-colors inline-flex items-center gap-1 cursor-pointer"
+                    onClick={() => setAuthModalMode('signup')}
+                    className="text-[#8B2E0B] hover:underline font-bold cursor-pointer"
                   >
-                    ⚡ Quick Fill Store Admin
+                    Create an account
                   </button>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setIsAuthModalOpen(false);
-                      navigateTo('admin');
-                    }}
-                    className="text-[#55504A] hover:text-[#8B2E0B] text-[11px] font-bold transition-colors inline-flex items-center gap-1.5 cursor-pointer"
-                  >
-                    <Lock className="w-3 h-3 text-[#8B2E0B]" />
-                    <span>Go to Admin Portal →</span>
-                  </button>
-                </div>
+                </span>
               </div>
             </form>
           )}

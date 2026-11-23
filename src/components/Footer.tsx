@@ -8,22 +8,19 @@ export const Footer: React.FC = () => {
   const [status, setStatus] = useState<'idle' | 'loading' | 'success' | 'error'>('idle');
   const [feedbackMessage, setFeedbackMessage] = useState('');
 
-  const handleSubscribe = (e: React.FormEvent) => {
+  const handleSubscribe = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!subscribedEmail.trim()) return;
-    
     setStatus('loading');
-    setTimeout(() => {
-      const res = addSubscriber(subscribedEmail);
-      if (res.success) {
-        setStatus('success');
-        setFeedbackMessage(res.message);
-        setSubscribedEmail('');
-      } else {
-        setStatus('error');
-        setFeedbackMessage(res.message);
-      }
-    }, 300);
+    const res = await addSubscriber(subscribedEmail);
+    if (res.success) {
+      setStatus('success');
+      setFeedbackMessage(res.message);
+      setSubscribedEmail('');
+    } else {
+      setStatus('error');
+      setFeedbackMessage(res.message);
+    }
   };
 
   const social = settings.socialLinks || {};

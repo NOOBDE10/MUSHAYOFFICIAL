@@ -72,6 +72,7 @@ export interface TrackingStep {
 export interface Order {
   id: string;
   orderNumber: string;
+  customerUid?: string | null;
   customerName: string;
   customerEmail: string;
   customerPhone: string;
@@ -140,7 +141,6 @@ export interface StoreSettings {
   notificationEmail: string;
   storeStatus: 'open' | 'maintenance';
   currency: string;
-  adminPasswordProtectionEnabled?: boolean;
   contactAddress?: string;
   telephoneConcierge?: string;
   announcementDeliveryText?: string;
@@ -184,11 +184,6 @@ export interface UserAccount {
 export interface AdminCredentials {
   name?: string;
   email: string;
-  password: string;
-  gatewayPasscode: string;
-  isConfigured: boolean;
-  recoveryKey?: string;
-  lastUpdated: string;
 }
 
 export interface SecurityLog {
